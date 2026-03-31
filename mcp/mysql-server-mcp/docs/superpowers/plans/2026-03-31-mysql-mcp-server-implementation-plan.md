@@ -46,6 +46,8 @@ src/main/resources/
 
 - [ ] **Step 1: 添加 MySQL 依赖**
 
+确认 pom.xml 中已有 `spring-ai-starter-mcp-server`（已存在）和 `lombok`（已存在）。
+
 在 `pom.xml` 的 `<dependencies>` 中添加：
 
 ```xml
@@ -443,10 +445,8 @@ git add . && git commit -m "feat: 添加事务管理器"
 ```java
 package com.gk.llm.mcp.mysqlservermcp.tool;
 
-import com.gk.llm.mcp.mysqlservermcp.config.DataSourceProperties;
 import com.gk.llm.mcp.mysqlservermcp.service.TransactionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.ai.tool.annotation.Tool;
@@ -455,54 +455,21 @@ import org.springframework.stereotype.Component;
 
 import javax.sql.DataSource;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * DQL 执行器 - 处理 SELECT 查询
+ * 使用只读事务
  */
 @Component
 public class ExecuteQueryTool {
 
-    private final DataSourceProperties dataSourceProperties;
+    private final DataSource dataSource;
+    private final TransactionManager transactionManager;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ExecuteQueryTool(DataSourceProperties dataSourceProperties) {
-        this.dataSourceProperties = dataSourceProperties;
-    }
-
-    private DataSource createDataSource() {
-        // 使用动态数据源
-        return new javax.sql.DataSource() {
-            @Override
-            public Connection getConnection() throws SQLException {
-                return DriverManager.getConnection(
-                    dataSourceProperties.getUrl(),
-                    dataSourceProperties.getUsername(),
-                    dataSourceProperties.getPassword()
-                );
-            }
-
-            @Override
-            public Connection getConnection(String username, String password) throws SQLException {
-                return getConnection();
-            }
-
-            @Override
-            public java.util.logging.Logger getParentLogger() {
-                return null;
-            }
-
-            @Override
-            public <T> T unwrap(Class<T> iface) {
-                return null;
-            }
-
-            @Override
-            public boolean isWrapperFor(Class<?> iface) {
-                return false;
-            }
-        };
+    public ExecuteQueryTool(DataSource dataSource, TransactionManager transactionManager) {
+        this.dataSource = dataSource;
+        this.transactionManager = transactionManager;
     }
 
     @Tool(description = "执行 SELECT 查询，返回查询结果")
@@ -512,39 +479,44 @@ public class ExecuteQueryTool {
             return "错误：只支持 SELECT 查询，请使用其他工具执行 INSERT/UPDATE/DELETE";
         }
 
-        try (Connection conn = createDataSource().getConnection();
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
+        try {
+            ArrayNode resultArray = transactionManager.execute(() -> {
+                try (Connection conn = dataSource.getConnection();
+                     Statement stmt = conn.createStatement();
+                     ResultSet rs = stmt.executeQuery(sql)) {
 
-            ResultSetMetaData metaData = rs.getMetaData();
-            int columnCount = metaData.getColumnCount();
+                    ResultSetMetaData metaData = rs.getMetaData();
+                    int columnCount = metaData.getColumnCount();
+                    ArrayNode rows = objectMapper.createArrayNode();
 
-            ArrayNode resultArray = objectMapper.createArrayNode();
-
-            while (rs.next()) {
-                ObjectNode row = objectMapper.createObjectNode();
-                for (int i = 1; i <= columnCount; i++) {
-                    String columnName = metaData.getColumnLabel(i);
-                    Object value = rs.getObject(i);
-                    if (value != null) {
-                        row.put(columnName, value.toString());
-                    } else {
-                        row.putNull(columnName);
+                    while (rs.next()) {
+                        ObjectNode row = objectMapper.createObjectNode();
+                        for (int i = 1; i <= columnCount; i++) {
+                            String columnName = metaData.getColumnLabel(i);
+                            Object value = rs.getObject(i);
+                            if (value != null) {
+                                row.put(columnName, value.toString());
+                            } else {
+                                row.putNull(columnName);
+                            }
+                        }
+                        rows.add(row);
                     }
+                    return rows;
                 }
-                resultArray.add(row);
-            }
+            });
 
             ObjectNode result = objectMapper.createObjectNode();
             result.set("data", resultArray);
             result.put("rowCount", resultArray.size());
-
             return objectMapper.writeValueAsString(result);
 
         } catch (SQLException e) {
-            return "错误：" + e.getMessage();
+            return "数据库错误：" + e.getMessage();
+        } catch (RuntimeException e) {
+            return "事务错误：" + e.getMessage();
         } catch (Exception e) {
-            return "错误：" + e.getMessage();
+            return "序列化错误：" + e.getMessage();
         }
     }
 }
@@ -568,7 +540,6 @@ git add . && git commit -m "feat: 添加 DQL 执行器"
 ```java
 package com.gk.llm.mcp.mysqlservermcp.tool;
 
-import com.gk.llm.mcp.mysqlservermcp.config.DataSourceProperties;
 import com.gk.llm.mcp.mysqlservermcp.service.TransactionManager;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
@@ -583,45 +554,12 @@ import java.sql.*;
 @Component
 public class ExecuteUpdateTool {
 
-    private final DataSourceProperties dataSourceProperties;
+    private final DataSource dataSource;
     private final TransactionManager transactionManager;
 
-    public ExecuteUpdateTool(DataSourceProperties dataSourceProperties, TransactionManager transactionManager) {
-        this.dataSourceProperties = dataSourceProperties;
+    public ExecuteUpdateTool(DataSource dataSource, TransactionManager transactionManager) {
+        this.dataSource = dataSource;
         this.transactionManager = transactionManager;
-    }
-
-    private DataSource createDataSource() {
-        return new javax.sql.DataSource() {
-            @Override
-            public Connection getConnection() throws SQLException {
-                return DriverManager.getConnection(
-                    dataSourceProperties.getUrl(),
-                    dataSourceProperties.getUsername(),
-                    dataSourceProperties.getPassword()
-                );
-            }
-
-            @Override
-            public Connection getConnection(String username, String password) throws SQLException {
-                return getConnection();
-            }
-
-            @Override
-            public java.util.logging.Logger getParentLogger() {
-                return null;
-            }
-
-            @Override
-            public <T> T unwrap(Class<T> iface) {
-                return null;
-            }
-
-            @Override
-            public boolean isWrapperFor(Class<?> iface) {
-                return false;
-            }
-        };
     }
 
     @Tool(description = "执行 INSERT、UPDATE、DELETE 语句")
@@ -632,9 +570,8 @@ public class ExecuteUpdateTool {
         }
 
         try {
-            DataSource ds = createDataSource();
             int affectedRows = transactionManager.execute(() -> {
-                try (Connection conn = ds.getConnection();
+                try (Connection conn = dataSource.getConnection();
                      Statement stmt = conn.createStatement()) {
                     return stmt.executeUpdate(sql);
                 }
@@ -642,8 +579,10 @@ public class ExecuteUpdateTool {
 
             return "成功，影响行数：" + affectedRows;
 
-        } catch (Exception e) {
-            return "错误：" + e.getMessage();
+        } catch (SQLException e) {
+            return "数据库错误：" + e.getMessage();
+        } catch (RuntimeException e) {
+            return "事务错误：" + e.getMessage();
         }
     }
 }
@@ -667,7 +606,6 @@ git add . && git commit -m "feat: 添加 DML 执行器"
 ```java
 package com.gk.llm.mcp.mysqlservermcp.tool;
 
-import com.gk.llm.mcp.mysqlservermcp.config.DataSourceProperties;
 import com.gk.llm.mcp.mysqlservermcp.security.SqlGuard;
 import com.gk.llm.mcp.mysqlservermcp.service.TransactionManager;
 import org.springframework.ai.tool.annotation.Tool;
@@ -686,49 +624,16 @@ import java.sql.Statement;
 @Component
 public class ExecuteDDlTool {
 
-    private final DataSourceProperties dataSourceProperties;
+    private final DataSource dataSource;
     private final TransactionManager transactionManager;
     private final SqlGuard sqlGuard;
 
-    public ExecuteDDlTool(DataSourceProperties dataSourceProperties,
+    public ExecuteDDlTool(DataSource dataSource,
                          TransactionManager transactionManager,
                          SqlGuard sqlGuard) {
-        this.dataSourceProperties = dataSourceProperties;
+        this.dataSource = dataSource;
         this.transactionManager = transactionManager;
         this.sqlGuard = sqlGuard;
-    }
-
-    private DataSource createDataSource() {
-        return new javax.sql.DataSource() {
-            @Override
-            public Connection getConnection() throws SQLException {
-                return DriverManager.getConnection(
-                    dataSourceProperties.getUrl(),
-                    dataSourceProperties.getUsername(),
-                    dataSourceProperties.getPassword()
-                );
-            }
-
-            @Override
-            public Connection getConnection(String username, String password) throws SQLException {
-                return getConnection();
-            }
-
-            @Override
-            public java.util.logging.Logger getParentLogger() {
-                return null;
-            }
-
-            @Override
-            public <T> T unwrap(Class<T> iface) {
-                return null;
-            }
-
-            @Override
-            public boolean isWrapperFor(Class<?> iface) {
-                return false;
-            }
-        };
     }
 
     @Tool(description = "执行 CREATE、ALTER、DROP、TRUNCATE 等 DDL 语句")
@@ -740,9 +645,8 @@ public class ExecuteDDlTool {
         }
 
         try {
-            DataSource ds = createDataSource();
             transactionManager.execute(() -> {
-                try (Connection conn = ds.getConnection();
+                try (Connection conn = dataSource.getConnection();
                      Statement stmt = conn.createStatement()) {
                     stmt.execute(sql);
                 }
@@ -751,8 +655,10 @@ public class ExecuteDDlTool {
 
             return "成功执行 DDL：" + sql;
 
-        } catch (Exception e) {
-            return "错误：" + e.getMessage();
+        } catch (SQLException e) {
+            return "数据库错误：" + e.getMessage();
+        } catch (RuntimeException e) {
+            return "事务错误：" + e.getMessage();
         }
     }
 }
@@ -819,21 +725,21 @@ public class MysqlMcpServerAutoConfiguration {
     }
 
     @Bean
-    public ExecuteQueryTool executeQueryTool(DataSourceProperties dataSourceProperties) {
-        return new ExecuteQueryTool(dataSourceProperties);
+    public ExecuteQueryTool executeQueryTool(DataSource dataSource, TransactionManager transactionManager) {
+        return new ExecuteQueryTool(dataSource, transactionManager);
     }
 
     @Bean
-    public ExecuteUpdateTool executeUpdateTool(DataSourceProperties dataSourceProperties,
+    public ExecuteUpdateTool executeUpdateTool(DataSource dataSource,
                                                 TransactionManager transactionManager) {
-        return new ExecuteUpdateTool(dataSourceProperties, transactionManager);
+        return new ExecuteUpdateTool(dataSource, transactionManager);
     }
 
     @Bean
-    public ExecuteDDlTool executeDDlTool(DataSourceProperties dataSourceProperties,
+    public ExecuteDDlTool executeDDlTool(DataSource dataSource,
                                           TransactionManager transactionManager,
                                           SqlGuard sqlGuard) {
-        return new ExecuteDDlTool(dataSourceProperties, transactionManager, sqlGuard);
+        return new ExecuteDDlTool(dataSource, transactionManager, sqlGuard);
     }
 
     @Bean
@@ -871,7 +777,34 @@ git add . && git commit -m "feat: 添加 MCP Server 自动配置"
 
 ---
 
-## Task 9: 验证构建
+## Task 9: STDIO 传输配置
+
+**文件：**
+- 创建: `src/main/resources/application.properties`（如果尚未创建）
+
+- [ ] **Step 1: 配置 STDIO 传输**
+
+在 `application.properties` 中添加：
+
+```properties
+# MCP Server STDIO 传输配置
+spring.ai.mcp.server.transport=stdio
+spring.main.web-application-type=none
+```
+
+说明：
+- `spring.ai.mcp.server.transport=stdio` 启用 STDIO 传输协议
+- `spring.main.web-application-type=none` 禁用 Web 容器，因为 STDIO 模式下不需要 HTTP 服务器
+
+- [ ] **Step 2: 提交**
+
+```bash
+git add . && git commit -m "feat: 配置 STDIO 传输协议"
+```
+
+---
+
+## Task 10: 验证构建
 
 **文件：**
 - 修改: `pom.xml`
