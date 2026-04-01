@@ -2,9 +2,10 @@
 
 ## 1. 概述
 
-- **功能**：提供通用的 SQL 执行工具，通过原生 JDBC（DriverManager）直接执行 SQL 语句
+- **功能**：提供通用的 SQL 执行工具，使用 JdbcTemplate 参数化查询防止 SQL 注入
 - **位置**：`com.gk.llm.mcp.mysqlservermcp.utils.JdbcUtils`
-- **依赖**：Spring Boot 的 `@Value` 注解从配置文件读取数据库连接参数
+- **辅助类**：`com.gk.llm.mcp.mysqlservermcp.utils.SqlSafetyUtils`
+- **依赖**：Spring Boot 的 `@Value` 注解从配置文件读取数据库连接参数，JdbcTemplate 执行 SQL
 
 ## 2. 配置读取
 
@@ -16,49 +17,103 @@
 | 用户名 | `spring.datasource.username` | 数据库用户名 |
 | 密码 | `spring.datasource.password` | 数据库密码 |
 
-## 3. 方法签名
+## 3. JdbcUtils 类设计
 
 ```java
 @Component
 public class JdbcUtils {
 
-    @Value("${spring.datasource.url}")
-    private String url;
+    private final JdbcTemplate jdbcTemplate;
 
-    @Value("${spring.datasource.username}")
-    private String username;
-
-    @Value("${spring.datasource.password}")
-    private String password;
+    public JdbcUtils(@Value("${spring.datasource.url}") String url,
+                     @Value("${spring.datasource.username}") String username,
+                     @Value("${spring.datasource.password}") String password) {
+        // 初始化 JdbcTemplate
+        jdbcTemplate = new JdbcTemplate(createDataSource(url, username, password));
+    }
 
     /**
-     * 执行 SQL 语句，自动根据 SQL 类型路由
-     * @param sql 完整的 SQL 语句
-     * @return JSON 格式的执行结果
+     * 执行 SELECT 查询（参数化，防止注入）
+     * @param sql 带占位符的 SQL
+     * @param args 参数值
+     * @return JSON 格式结果
      */
-    public String execute(String sql)
+    public String executeQuery(String sql, Object... args)
+
+    /**
+     * 执行 INSERT/UPDATE/DELETE（参数化，防止注入）
+     * @param sql 带占位符的 SQL
+     * @param args 参数值
+     * @return JSON 格式结果
+     */
+    public String executeUpdate(String sql, Object... args)
+
+    /**
+     * 执行 DDL（CREATE、ALTER 等）
+     * @param sql DDL 语句
+     * @return JSON 格式结果
+     */
+    public String executeDDL(String sql)
 }
 ```
 
-## 4. SQL 类型判断逻辑
+## 4. SqlSafetyUtils 安全检查规则
 
-根据 SQL 首词自动判断类型并路由：
+```java
+public class SqlSafetyUtils {
 
-| SQL 首词（忽略前后空格） | JDBC 方法 | 返回 type |
-|------------------------|----------|-----------|
-| SELECT | Statement.executeQuery() | QUERY |
-| INSERT | Statement.executeUpdate() | UPDATE |
-| UPDATE | Statement.executeUpdate() | UPDATE |
-| DELETE | Statement.executeUpdate() | UPDATE |
-| 其他（CREATE, ALTER, DROP 等） | Statement.execute() | DDL |
+    /**
+     * 检查 SQL 是否安全可执行
+     * @param sql 原始 SQL 语句
+     * @return true=安全可执行，false=危险拒绝执行
+     */
+    public static boolean isSafe(String sql)
+}
+```
 
-## 5. 返回 JSON 格式
+### 安全检查规则
+
+| SQL 首词 | 允许条件 | 拒绝条件 |
+|---------|---------|---------|
+| SELECT | 任意（查询数据） | - |
+| UPDATE | 必须包含 WHERE 子句（带条件更新） | 无 WHERE → 拒绝 |
+| DELETE | 必须包含 WHERE 子句（带条件删除） | 无 WHERE → 拒绝 |
+| CREATE TABLE/INDEX | 任意（建表、建索引） | - |
+| DESCRIBE / SHOW | 任意（查看表结构） | - |
+| ALTER TABLE | 任意（修改表结构） | - |
+| DROP / TRUNCATE / DELETE 无条件 | - | 全部拒绝 |
+| GRANT / REVOKE | - | 全部拒绝 |
+
+### 拒绝执行返回 JSON
+```json
+{
+  "success": false,
+  "error": "危险SQL，已拒绝执行: TRUNCATE TABLE user"
+}
+```
+
+## 5. 执行流程
+
+```
+executeQuery(sql, args)
+  → SqlSafetyUtils.isSafe(sql) → false → 返回拒绝 JSON
+  → true → JdbcTemplate.query() → 返回结果 JSON
+
+executeUpdate(sql, args)
+  → SqlSafetyUtils.isSafe(sql) → false → 返回拒绝 JSON
+  → true → JdbcTemplate.update() → 返回影响行数 JSON
+
+executeDDL(sql)
+  → SqlSafetyUtils.isSafe(sql) → false → 返回拒绝 JSON
+  → true → JdbcTemplate.execute() → 返回成功 JSON
+```
+
+## 6. 返回 JSON 格式
 
 ### 查询成功（SELECT）
 ```json
 {
   "success": true,
-  "type": "QUERY",
   "data": [
     {"id": 1, "name": "zhangsan"},
     {"id": 2, "name": "lisi"}
@@ -71,7 +126,6 @@ public class JdbcUtils {
 ```json
 {
   "success": true,
-  "type": "UPDATE",
   "affectedRows": 3
 }
 ```
@@ -80,7 +134,6 @@ public class JdbcUtils {
 ```json
 {
   "success": true,
-  "type": "DDL",
   "message": "执行成功"
 }
 ```
@@ -89,20 +142,20 @@ public class JdbcUtils {
 ```json
 {
   "success": false,
-  "type": "ERROR",
   "error": "Table 'user' doesn't exist"
 }
 ```
 
-## 6. 内部实现要点
+## 7. 内部实现要点
 
-1. **连接管理**：使用 `DriverManager.getConnection()` 获取原生连接
-2. **资源释放**：使用 try-with-resources 确保 Connection、Statement、ResultSet 正确关闭
+1. **防止注入**：使用 JdbcTemplate 的参数化查询（`?` 占位符），参数通过 args 可变参数传入
+2. **安全检查**：执行前调用 `SqlSafetyUtils.isSafe(sql)` 检查
 3. **结果集转换**：查询结果通过 `ResultSetMetaData` 获取列名，使用 `getObject()` 获取值并转换为字符串
 4. **异常处理**：捕获 `SQLException`，包装为 JSON 错误格式返回
+5. **DataSource 创建**：使用 `DriverManagerDataSource` 或 `SimpleDriverDataSource` 创建 DataSource 供 JdbcTemplate 使用
 
-## 7. 依赖关系
+## 8. 依赖关系
 
 - Spring Boot 框架（提供 `@Value` 注解支持）
-- JDK 原生 JDBC（`java.sql.*`）
+- Spring JDBC（`spring-boot-starter-jdbc` 提供 JdbcTemplate）
 - Jackson（用于 JSON 序列化，项目中已引入）
