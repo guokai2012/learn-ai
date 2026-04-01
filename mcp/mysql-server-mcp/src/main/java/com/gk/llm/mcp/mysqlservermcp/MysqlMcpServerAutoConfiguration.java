@@ -38,7 +38,7 @@ public class MysqlMcpServerAutoConfiguration {
     }
 
     @Bean
-    public TransactionManager transactionManager(DataSource dataSource) {
+    public TransactionManager mysqlTransactionManager(DataSource dataSource) {
         return new TransactionManager(dataSource);
     }
 

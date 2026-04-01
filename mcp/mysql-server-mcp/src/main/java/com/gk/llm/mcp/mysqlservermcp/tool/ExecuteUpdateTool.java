@@ -39,8 +39,6 @@ public class ExecuteUpdateTool {
 
             return "成功，影响行数：" + affectedRows;
 
-        } catch (SQLException e) {
-            return "数据库错误：" + e.getMessage();
         } catch (RuntimeException e) {
             return "事务错误：" + e.getMessage();
         }

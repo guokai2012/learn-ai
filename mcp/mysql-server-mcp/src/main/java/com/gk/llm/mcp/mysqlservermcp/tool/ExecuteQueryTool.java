@@ -66,8 +66,6 @@ public class ExecuteQueryTool {
             result.put("rowCount", resultArray.size());
             return objectMapper.writeValueAsString(result);
 
-        } catch (SQLException e) {
-            return "数据库错误：" + e.getMessage();
         } catch (RuntimeException e) {
             return "事务错误：" + e.getMessage();
         } catch (Exception e) {

@@ -49,8 +49,6 @@ public class ExecuteDDlTool {
 
             return "成功执行 DDL：" + sql;
 
-        } catch (SQLException e) {
-            return "数据库错误：" + e.getMessage();
         } catch (RuntimeException e) {
             return "事务错误：" + e.getMessage();
         }
