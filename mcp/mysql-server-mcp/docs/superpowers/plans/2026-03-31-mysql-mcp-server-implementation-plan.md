@@ -114,7 +114,7 @@ spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver
 
 ```properties
 org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
-com.gk.llm.mcp.mysqlservermcp.MysqlMcpServerAutoConfiguration
+com.gk.llm.mcp.mysqlservermcp.config.MysqlMcpServerAutoConfiguration
 ```
 
 - [ ] **Step 4: 提交**
@@ -757,7 +757,7 @@ public class MysqlMcpServerAutoConfiguration {
 
 ```properties
 org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
-com.gk.llm.mcp.mysqlservermcp.MysqlMcpServerAutoConfiguration
+com.gk.llm.mcp.mysqlservermcp.config.MysqlMcpServerAutoConfiguration
 ```
 
 - [ ] **Step 3: 添加 Apache Commons DBCP2 依赖到 pom.xml**
